@@ -1,21 +1,14 @@
 module SparseMaxSRReplication
 
-using Serialization
+using SparseMaxSR        # for all the core algorithms
+include("Utils.jl")      # defines module Utils
 
-const DATADIR = joinpath(@__DIR__, "..", "data")
+using .Utils: load_matrix,
+              compute_mve_sr_decomposition,
+              simulate_mve_sr
 
-"""
-    load_matrix(name::String) -> Matrix{Float64}
-
-Load the serialized Matrix stored in `data/<name>.jls`.
-"""
-function load_matrix(name::AbstractString)
-    path = joinpath(DATADIR, name*".jls")
-    open(path) do io
-        return deserialize(io)
-    end
-end
-
-export load_matrix
+export load_matrix,
+       compute_mve_sr_decomposition,
+       simulate_mve_sr
 
 end # module

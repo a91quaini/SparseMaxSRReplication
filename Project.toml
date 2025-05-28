@@ -4,9 +4,16 @@ authors = ["a91quaini <alberto91quaini@gmail.com>"]
 version = "0.1.0"
 
 [deps]
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
+SparseMaxSR = "67da26f7-3efd-406f-8ecf-6571d1bf31c7"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [compat]
+LinearAlgebra = "1.11.0"
+Random = "1.11.0"
 Serialization = "1.11.0"
 Statistics = "1.11.1"
+Test = "1.11.0"
