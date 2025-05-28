@@ -4,7 +4,9 @@ authors = ["a91quaini <alberto91quaini@gmail.com>"]
 version = "0.1.0"
 
 [deps]
+Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 
 [compat]
+Serialization = "1.11.0"
 Statistics = "1.11.1"
