@@ -193,24 +193,27 @@ end
     base_data = data_dir()
 
     # ======================
-    # 1) MONTHLY PANELS
+    # 1) MONTHLY — US
     # ======================
-    Rm, dates_m = load_managed_portfolios(; data_root=base_data, freq=:monthly, get_dates=true)
+    Rm, dates_m = load_managed_portfolios(; data_root=base_data, freq=:monthly, type=:US,
+                                          handling_missing=:Skip, get_dates=true)
 
     @test isa(Rm, Matrix{Float64})
     @test isa(dates_m, Vector{Int})
     @test size(Rm, 1) == length(dates_m) > 0
     @test size(Rm, 2) > 0
-    @test all(isfinite, Rm)
-
-    # Dates strictly increasing & unique
-    @test all(diff(dates_m) .> 0)
-    @test allunique(dates_m)
+    @test all(diff(dates_m) .> 0)               # strictly increasing
+    @test allunique(dates_m)                    # unique dates
+    @test all(!isnan, Rm)                       # :Skip ⇒ no NaNs remain
 
     # Cross-check first column of one constituent file (e.g., ind17)
     ind17m = _load_panel(base_data, "managed_portfolios_monthly", "returns_ind17_monthly")
-    @test all(ind17m[:, 1] .== dates_m)
-    @test all(isfinite, ind17m[:, 2:end])
+    begin
+        dpanel = Vector{Int}(ind17m[:, 1])
+        dset = Set(dates_m)
+        rows = findall(x -> x in dset, dpanel)
+        @test dpanel[rows] == dates_m
+    end
 
     # Column count equals sum across all monthly panels (excluding date col)
     monthly_names = String[
@@ -233,25 +236,36 @@ end
                          monthly_names)
     @test sum(monthly_counts) == size(Rm, 2)
 
+    # Also test :Median policy — should return no NaNs, possibly different number of rows than :Skip
+    Rm_med, dates_m_med = load_managed_portfolios(; data_root=base_data, freq=:monthly, type=:US,
+                                                  handling_missing=:Median, get_dates=true)
+    @test isa(Rm_med, Matrix{Float64})
+    @test size(Rm_med, 1) == length(dates_m_med) > 0
+    @test size(Rm_med, 2) == size(Rm, 2)
+    @test all(!isnan, Rm_med)
+
     # ======================
-    # 2) DAILY PANELS
+    # 2) DAILY — US
     # ======================
-    Rd, dates_d = load_managed_portfolios(; data_root=base_data, freq=:daily, get_dates=true)
+    Rd, dates_d = load_managed_portfolios(; data_root=base_data, freq=:daily, type=:US,
+                                          handling_missing=:Skip, get_dates=true)
 
     @test isa(Rd, Matrix{Float64})
     @test isa(dates_d, Vector{Int})
     @test size(Rd, 1) == length(dates_d) > 0
     @test size(Rd, 2) > 0
-    @test all(isfinite, Rd)
-
-    # Dates strictly increasing & unique (no assumptions on business days)
     @test all(diff(dates_d) .> 0)
     @test allunique(dates_d)
+    @test all(!isnan, Rd)                        # :Skip ⇒ no NaNs remain
 
-    # Cross-check first column of one daily panel (e.g., ind49)
+    # Cross-check dates against one daily panel (e.g., ind49)
     ind49d = _load_panel(base_data, "managed_portfolios_daily", "returns_ind49_daily")
-    @test all(ind49d[:, 1] .== dates_d)
-    @test all(isfinite, ind49d[:, 2:end])
+    begin
+        dpanel = Vector{Int}(ind49d[:, 1])
+        dset = Set(dates_d)
+        rows = findall(x -> x in dset, dpanel)
+        @test dpanel[rows] == dates_d
+    end
 
     # Column count equals sum across all daily panels (excluding date col)
     daily_names = String[
@@ -270,13 +284,82 @@ end
                        daily_names)
     @test sum(daily_counts) == size(Rd, 2)
 
+    # Also test :Median policy
+    Rd_med, dates_d_med = load_managed_portfolios(; data_root=base_data, freq=:daily, type=:US,
+                                                  handling_missing=:Median, get_dates=true)
+    @test isa(Rd_med, Matrix{Float64})
+    @test size(Rd_med, 1) == length(dates_d_med) > 0
+    @test size(Rd_med, 2) == size(Rd, 2)
+    @test all(!isnan, Rd_med)
+
     # ======================
-    # 3) ERROR PATH
+    # 3) DAILY — International
+    # ======================
+    R_int, dates_int = load_managed_portfolios(; data_root=base_data, freq=:daily, type=:International,
+                                               handling_missing=:Skip, get_dates=true)
+
+    @test isa(R_int, Matrix{Float64})
+    @test isa(dates_int, Vector{Int})
+    @test size(R_int, 1) == length(dates_int) > 0
+    @test size(R_int, 2) > 0
+    @test all(diff(dates_int) .> 0)
+    @test allunique(dates_int)
+    @test all(!isnan, R_int)
+
+    # Cross-check dates with one international panel (e.g., Europe ME×BE/ME)
+    eu_panel = _load_panel(base_data, "managed_portfolios_international_daily", "returns_eu_mebeme25_int_daily")
+    begin
+        dpanel = Vector{Int}(eu_panel[:, 1])
+        dset = Set(dates_int)
+        rows = findall(x -> x in dset, dpanel)
+        @test dpanel[rows] == dates_int
+    end
+
+    # Column count equals sum across all international-daily panels (excluding date col)
+    intl_daily_names = String[
+        # Asia Pacific ex Japan
+        "returns_apxj_mebeme25_int_daily",
+        "returns_apxj_meinv25_int_daily",
+        "returns_apxj_meop25_int_daily",
+        "returns_apxj_meprior25020_int_daily",
+        # Europe
+        "returns_eu_mebeme25_int_daily",
+        "returns_eu_meinv25_int_daily",
+        "returns_eu_meop25_int_daily",
+        "returns_eu_meprior25020_int_daily",
+        # Japan
+        "returns_jp_mebeme25_int_daily",
+        "returns_jp_meinv25_int_daily",
+        "returns_jp_meop25_int_daily",
+        "returns_jp_meprior25020_int_daily",
+        # North America
+        "returns_na_mebeme25_int_daily",
+        "returns_na_meinv25_int_daily",
+        "returns_na_meop25_int_daily",
+        "returns_na_meprior25020_int_daily",
+    ]
+    intl_daily_counts = map(name -> size(_load_panel(base_data, "managed_portfolios_international_daily", name), 2) - 1,
+                            intl_daily_names)
+    @test sum(intl_daily_counts) == size(R_int, 2)
+
+    # Also test :Median policy on International daily
+    R_int_med, dates_int_med = load_managed_portfolios(; data_root=base_data, freq=:daily, type=:International,
+                                                       handling_missing=:Median, get_dates=true)
+    @test isa(R_int_med, Matrix{Float64})
+    @test size(R_int_med, 1) == length(dates_int_med) > 0
+    @test size(R_int_med, 2) == size(R_int, 2)
+    @test all(!isnan, R_int_med)
+
+    # ======================
+    # 4) ERROR PATHS
     # ======================
     bad_root = joinpath(@__DIR__, "non_existing_path_xyz")
-    @test_throws ErrorException load_managed_portfolios(; data_root=bad_root, freq=:monthly)
+    @test_throws ErrorException load_managed_portfolios(; data_root=bad_root, freq=:monthly, type=:US)
 
-    println("✅ load_managed_portfolios: monthly and daily passed structural + consistency checks.")
+    # International monthly not configured yet
+    @test_throws ErrorException load_managed_portfolios(; data_root=base_data, freq=:monthly, type=:International)
+
+    println("✅ load_managed_portfolios: US monthly, US daily, and International daily passed structural + consistency checks under both missing-data policies.")
 end
 
 @testset "Utils.n_choose_k_mve_sr" begin

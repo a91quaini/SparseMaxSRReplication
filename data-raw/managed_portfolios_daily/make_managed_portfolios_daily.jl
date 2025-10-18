@@ -1,11 +1,13 @@
-# data-raw/make_data_daily.jl
+# data-raw/make_managed_portfolios_daily.jl
 # ───────────────────────────
 # Read daily FF5 factors + daily managed portfolios,
+# check for sentinel missings (< -90.0) and set them to NaN,
 # convert % → decimals, subtract RF, date-align, and
 # serialize to data/managed_portfolios_daily/*.jls
 
 using DelimitedFiles       # Base
 using Serialization        # Base
+using Printf
 
 # -------- paths --------
 scriptdir = @__DIR__                                # .../data-raw
@@ -14,19 +16,52 @@ datadir   = joinpath(scriptdir, "..", "..", "data", "managed_portfolios_daily")
 mkpath(datadir)
 
 # -------- optional window (YYYYMMDD integers); set to nothing for full range --------
-const START_DATE = 19900101 # nothing  :: Union{Nothing,Int}
-const STOP_DATE  = 20231231 # nothing  :: Union{Nothing,Int}
+const START_DATE = 19910101 # nothing  :: Union{Nothing,Int}
+const STOP_DATE  = 20241231 # nothing  :: Union{Nothing,Int}
 
 # -------- helpers --------
 """
     read_raw_csv(path) -> (A::Matrix{Float64}, header::Vector{String})
 
 Read a CSV with a single header row and numeric body using only Base.
+Assumes first column is DATE (YYYYMMDD).
 """
 function read_raw_csv(path::AbstractString)
     A, hdr = readdlm(path, ',', Float64; header=true)
     header = String.(vec(hdr))   # ensure Vector{String}
     return (A, header)
+end
+
+"""
+    check_no_missing_sentinels!(A; from_col=2, threshold=-90.0, replacement=NaN)
+
+Scan columns `from_col:end` for any value `< threshold` (e.g. -99.99, -999).
+Replace those entries with `replacement` (default: `NaN`) instead of throwing.
+Logs the number of replacements (up to 10 sample positions).
+"""
+function check_no_missing_sentinels!(
+    A::Matrix{Float64};
+    from_col::Int = 2,
+    threshold::Float64 = -90.0,
+    replacement::Float64 = NaN
+)
+    bad_pos = Vector{Tuple{Int,Int}}()
+    n_bad = 0
+    @inbounds for i in 1:size(A,1), j in from_col:size(A,2)
+        val = A[i,j]
+        if !isnan(val) && val < threshold
+            A[i,j] = replacement
+            n_bad += 1
+            if length(bad_pos) < 10
+                push!(bad_pos, (i,j))
+            end
+        end
+    end
+    if n_bad > 0
+        sample_str = join(["(row=$(p[1]), col=$(p[2]))" for p in bad_pos], ", ")
+        @warn "Replaced $n_bad sentinel values (< $threshold) with $replacement. Sample: $sample_str"
+    end
+    return A
 end
 
 """
@@ -107,8 +142,10 @@ end
 # -------- read FF5 daily (for RF) --------
 ff5_file = joinpath(rawdir, "F-F_Research_Data_5_Factors_2x3_daily.csv")
 f_factors, f_header = read_raw_csv(ff5_file)
+# Clean sentinels BEFORE any transformation
+check_no_missing_sentinels!(f_factors; from_col=2, threshold=-90.0, replacement=NaN)
 f_factors = filter_window!(f_factors)
-percent_to_decimal!(f_factors)                      # includes RF column
+percent_to_decimal!(f_factors)                      # includes RF column now in decimals
 rf = rf_from_factors(f_factors, f_header)
 
 # persist factors + rf (useful to have both)
@@ -138,11 +175,17 @@ portfolio_files = [
 for (infile, outslug) in portfolio_files
     path = joinpath(rawdir, infile)
     M, _ = read_raw_csv(path)                   # DATE + portfolio % returns
-    E = align_and_excess(M, rf)                 # → DATE + excess (decimals)
+
+    # Clean sentinels BEFORE any transformation
+    check_no_missing_sentinels!(M; from_col=2, threshold=-90.0, replacement=NaN)
+
+    # Align to RF and compute excess (decimals)
+    E = align_and_excess(M, rf)
+
     open(joinpath(datadir, outslug * ".jls"), "w") do io
         serialize(io, E)
     end
-    println("✓ wrote ", outslug, ".jls  (rows=", size(E,1), ", cols=", size(E,2), ")")
+    @printf("✓ wrote %s.jls  (rows=%d, cols=%d)\n", outslug, size(E,1), size(E,2))
 end
 
 println("\n→ All daily datasets written under data/managed_portfolios_daily/*.jls")

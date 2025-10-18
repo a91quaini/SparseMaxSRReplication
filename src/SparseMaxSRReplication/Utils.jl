@@ -149,23 +149,40 @@ end
 # ──────────────────────────────────────────────────────────────────────────────
 
 """
-    load_managed_portfolios(; data_root=data_dir(), freq=:monthly, get_dates=false)
+    load_managed_portfolios(; data_root=data_dir(),
+                              freq=:monthly,
+                              type=:US,
+                              handling_missing=:Skip,
+                              get_dates=false)
 
-Load and horizontally concatenate **all managed-portfolio panels** (serialized
-`.jls` matrices) for the requested frequency into a single `T×N` matrix of **excess
-returns** (without the date column). Dates must match across all panels.
+Load and horizontally concatenate managed-portfolio panels (serialized `.jls`
+matrices) for the requested frequency and dataset type into a single `T×N`
+matrix (without the date column). Dates must match across all panels.
 
-- `freq`: `:monthly` (default) or `:daily`.
+Arguments:
+- `freq`  :: `:monthly` (default) or `:daily`.
+- `type`  :: `:US` (default) or `:International` (international currently implemented for `:daily`).
+- `handling_missing` :: `:Median` (row-wise cross-sectional mean imputation) or `:Skip` (drop any row with ≥1 NaN). Rows that are all-NaN are always dropped.
 - `get_dates=true` additionally returns the vector of integer dates.
+
+Returns:
+- `R::Matrix{Float64}` or `(R, dates::Vector{Int})` if `get_dates=true`.
 """
 function load_managed_portfolios(; data_root::AbstractString=data_dir(),
                                    freq::Symbol=:monthly,
+                                   type::Symbol=:US,
+                                   handling_missing::Symbol=:Skip,
                                    get_dates::Bool=false)
 
-    # Pick subfolder + file basenames based on frequency
-    subdir, jls_basenames = if freq === :monthly
-        "managed_portfolios_monthly",
-        String[
+    # --------------------------
+    # Choose subdir and base names
+    # --------------------------
+    subdir = ""                          # initialize to avoid soft-scope/typed-binding issues
+    jls_basenames = String[]             # initialize empty list
+
+    if type === :US && freq === :monthly
+        subdir = "managed_portfolios_monthly"
+        jls_basenames = String[
             "returns_ind17_monthly",
             "returns_bemeinv25_monthly",
             "returns_bemeop25_monthly",
@@ -181,9 +198,9 @@ function load_managed_portfolios(; data_root::AbstractString=data_dir(),
             "returns_opinv25_monthly",
             "returns_mebeme25_monthly",
         ]
-    elseif freq === :daily
-        "managed_portfolios_daily",
-        String[
+    elseif type === :US && freq === :daily
+        subdir = "managed_portfolios_daily"
+        jls_basenames = String[
             "returns_ind49_daily",
             "returns_bemeinv25_daily",
             "returns_bemeop25_daily",
@@ -195,11 +212,41 @@ function load_managed_portfolios(; data_root::AbstractString=data_dir(),
             "returns_opinv25_daily",
             "returns_mebeme25_daily",
         ]
+    elseif type === :International && freq === :daily
+        subdir = "managed_portfolios_international_daily"
+        jls_basenames = String[
+            # Asia Pacific ex Japan
+            "returns_apxj_mebeme25_int_daily",
+            "returns_apxj_meinv25_int_daily",
+            "returns_apxj_meop25_int_daily",
+            "returns_apxj_meprior25020_int_daily",
+            # Europe
+            "returns_eu_mebeme25_int_daily",
+            "returns_eu_meinv25_int_daily",
+            "returns_eu_meop25_int_daily",
+            "returns_eu_meprior25020_int_daily",
+            # Japan
+            "returns_jp_mebeme25_int_daily",
+            "returns_jp_meinv25_int_daily",
+            "returns_jp_meop25_int_daily",
+            "returns_jp_meprior25020_int_daily",
+            # North America
+            "returns_na_mebeme25_int_daily",
+            "returns_na_meinv25_int_daily",
+            "returns_na_meop25_int_daily",
+            "returns_na_meprior25020_int_daily",
+        ]
+    elseif type === :International && freq === :monthly
+        error("International monthly panels not configured yet. Provide the monthly .jls list and I’ll add them.")
     else
-        error("freq must be :monthly or :daily (got $(freq))")
+        error("Unsupported combination: freq=$(freq), type=$(type).")
     end
 
-    # Helper: load a serialized matrix from data_root/subdir/<name>.jls
+    isempty(jls_basenames) && error("No panel basenames configured for freq=$(freq), type=$(type).")
+
+    # --------------------------
+    # Helper: load a .jls matrix
+    # --------------------------
     function _load_jls(name::AbstractString)
         path = joinpath(data_root, subdir, name * ".jls")
         isfile(path) || error("Missing file: ", path)
@@ -212,7 +259,9 @@ function load_managed_portfolios(; data_root::AbstractString=data_dir(),
     dates_ref::Union{Nothing,Vector{Int}} = nothing
     T_ref::Union{Nothing,Int} = nothing
 
-    # Load and validate date alignment
+    # --------------------------
+    # Load and validate dates
+    # --------------------------
     for (i, base) in enumerate(jls_basenames)
         M = _load_jls(base)
         size(M, 2) ≥ 2 || error("Matrix must have at least a date column + one portfolio: ", base)
@@ -229,10 +278,12 @@ function load_managed_portfolios(; data_root::AbstractString=data_dir(),
         mats[i] = M
     end
 
+    # --------------------------
+    # Concatenate columns 2:end
+    # --------------------------
     T = T_ref::Int
     total_N = sum(size(M, 2) - 1 for M in mats)
 
-    # Concatenate columns 2:end from each panel
     R = Matrix{Float64}(undef, T, total_N)
     j = 1
     for M in mats
@@ -241,7 +292,75 @@ function load_managed_portfolios(; data_root::AbstractString=data_dir(),
         j += p
     end
 
-    return get_dates ? (R, dates_ref::Vector{Int}) : R
+    dates_vec = dates_ref::Vector{Int}
+
+    # --------------------------
+    # Handle missing values (NaN)
+    # --------------------------
+    if handling_missing === :Skip
+        # Keep rows with no NaNs across any column
+        keep = trues(T)
+        @inbounds for i in 1:T
+            # any isnan? then drop
+            for k in 1:total_N
+                if isnan(R[i,k])
+                    keep[i] = false
+                    break
+                end
+            end
+        end
+        n_drop = count(!, keep)
+        if n_drop > 0
+            @warn "Dropping $n_drop rows containing NaNs (handling_missing=:Skip)."
+        end
+        R = R[keep, :]
+        dates_vec = dates_vec[keep]
+    elseif handling_missing === :Median
+        # Row-wise cross-sectional imputation (ignoring NaNs).
+        keep = trues(T)  # may drop rows that are all-NaN
+        n_impute = 0
+        n_drop = 0
+        @inbounds for i in 1:T
+            s = 0.0
+            c = 0
+            # first pass: mean of non-NaN
+            for k in 1:total_N
+                v = R[i,k]
+                if !isnan(v)
+                    s += v
+                    c += 1
+                end
+            end
+            if c == 0
+                # entire row missing: mark to drop
+                keep[i] = false
+                n_drop += 1
+            else
+                μ = s / c
+                # second pass: fill NaNs with μ
+                for k in 1:total_N
+                    if isnan(R[i,k])
+                        R[i,k] = μ
+                        n_impute += 1
+                    end
+                end
+            end
+        end
+        if n_impute > 0
+            @warn "Imputed $n_impute NaN entries with row cross-sectional mean (handling_missing=:Median)."
+        end
+        if n_drop > 0
+            @warn "Dropped $n_drop rows that were entirely NaN across portfolios."
+        end
+        if any(!, keep)
+            R = R[keep, :]
+            dates_vec = dates_vec[keep]
+        end
+    else
+        error("handling_missing must be :Median or :Skip (got $(handling_missing))")
+    end
+
+    return get_dates ? (R, dates_vec) : R
 end
 
 # ──────────────────────────────────────────────────────────────────────────────

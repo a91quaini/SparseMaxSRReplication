@@ -31,23 +31,55 @@ using Serialization
 # Configuration (you can tweak these)
 # ──────────────────────────────────────────────────────────────────────────────
 const W_IN_OPTIONS = (126, 252, 504)   # choose one below -> 6 months, 1 year, 2 years
+const W_OUT_OPTIONS = (63, 126, 252)   # choose one below -> 3 months, 6 months, 1 year
 const W_IN  = 252                      # in-sample window size (trading days ~ 1y)
 const W_OUT = 63                       # out-of-sample window size (~ 1 quarter)
 const SAVE_RESULTS = true              # set true to serialize results table
 
-# Optional knobs passed into searches (can be left empty NamedTuples)
-const LASSO_PARAMS = (;)
-const MIQP_PARAMS  = (;)
+# ──────────────────────────────────────────────────────────────────────────────
+# Suggested LASSO & MIQP params for N ≈ 275 daily managed portfolios
+# ──────────────────────────────────────────────────────────────────────────────
+# Rationale:
+# • Short in-sample (W_IN small) ⇒ higher estimation noise:
+#     - Use a **lower α** (more ridge-like, e.g. 0.10–0.30) to stabilize the path.
+#     - Use a **larger lambda_min_ratio** (e.g. 1e-2) to avoid extremely dense models.
+# • Long in-sample (W_IN large) ⇒ you can afford more sparsity:
+#     - Use a **higher α** (e.g. 0.7) and a **smaller lambda_min_ratio** (e.g. 1e-4).
+# • Stabilization (outside LASSO_PARAMS):
+#     - Prefer a **higher ε_in** when W_IN is short (e.g., ε_in ∈ {1e-3, 5e-4, 1e-4} for W_IN ∈ {126, 252, 504}).
+#     - Prefer a **higher ε_out** when W_OUT is short (e.g., ε_out ∈ {1e-3, 5e-4, 1e-4} for W_OUT ∈ {63, 126, 252}).
+#   These epsilons are passed to Utils.n_choose_k_mve_sr as epsilon_in / epsilon_out, not via LASSO_PARAMS.
+
+const RECOMMENDED_LASSO = Dict(
+    126 => (alpha = 0.30, nlambda = 200, lambda_min_ratio = 1e-3, standardize = true),
+    252 => (alpha = 0.70, nlambda = 200, lambda_min_ratio = 1e-3, standardize = true),
+    504 => (alpha = 0.90, nlambda = 200, lambda_min_ratio = 1e-4, standardize = true),
+)
+
+const RECOMMENDED_MIQP = Dict(
+    126 => (mip_gap = 0.01,  time_limit_sec = 60,  warm_starts = true, threads = Threads.nthreads()),
+    252 => (mip_gap = 0.005, time_limit_sec = 90,  warm_starts = true, threads = Threads.nthreads()),
+    504 => (mip_gap = 0.002, time_limit_sec = 120, warm_starts = true, threads = Threads.nthreads()),
+)
+
+# Optional knobs passed into searches (auto-picked from W_IN; override as you like)
+const LASSO_PARAMS = get(RECOMMENDED_LASSO, W_IN, (;))
+const MIQP_PARAMS  = get(RECOMMENDED_MIQP,  W_IN, (;))
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Load data
 # ──────────────────────────────────────────────────────────────────────────────
-R, dates = Utils.load_managed_portfolios(; freq = :daily, get_dates = true)
+R, dates = Utils.load_managed_portfolios(; freq = :daily, type = :US, handling_missing = :Median, get_dates = true)
 T, N = size(R)
 
 # Validate W_IN and build initial information banner
 if W_IN ∉ W_IN_OPTIONS
     @warn "W_IN not in recommended options; proceeding anyway" W_IN W_IN_OPTIONS
+end
+
+# Validate W_OUT and build initial information banner
+if W_OUT ∉ W_OUT_OPTIONS
+    @warn "W_OUT not in recommended options; proceeding anyway" W_OUT W_OUT_OPTIONS
 end
 
 # Derive k-grid

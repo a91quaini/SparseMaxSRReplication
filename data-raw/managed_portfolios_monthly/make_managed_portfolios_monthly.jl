@@ -1,6 +1,7 @@
 # data-raw/managed_portfolios_monthly/make_data_monthly.jl
 # ────────────────────────────────────────────────────────
 # Read MONTHLY FF5 factors + managed portfolio CSVs,
+# check for sentinel missings (< -90.0) and set them to NaN,
 # convert %→decimals, subtract RF, align by date (YYYYMM),
 # and serialize to data/managed_portfolios_monthly/*.jls
 
@@ -63,6 +64,39 @@ function read_monthly_table(path::AbstractString)
     return R, header
 end
 
+# NEW: sentinel replacement (keeps Matrix{Float64})
+"""
+    check_no_missing_sentinels!(A; from_col=2, threshold=-90.0, replacement=NaN)
+
+Scan columns `from_col:end` for any value `< threshold` (e.g., -99.99, -999).
+Replace those entries with `replacement` (default: `NaN`) instead of throwing.
+Logs the number of replacements (shows up to 10 sample positions).
+"""
+function check_no_missing_sentinels!(
+    A::Matrix{Float64};
+    from_col::Int = 2,
+    threshold::Float64 = -90.0,
+    replacement::Float64 = NaN
+)
+    bad_pos = Vector{Tuple{Int,Int}}()
+    n_bad = 0
+    @inbounds for i in 1:size(A,1), j in from_col:size(A,2)
+        val = A[i,j]
+        if !isnan(val) && val < threshold
+            A[i,j] = replacement
+            n_bad += 1
+            if length(bad_pos) < 10
+                push!(bad_pos, (i,j))
+            end
+        end
+    end
+    if n_bad > 0
+        sample_str = join(["(row=$(p[1]), col=$(p[2]))" for p in bad_pos], ", ")
+        @warn "Replaced $n_bad sentinel values (< $threshold) with $replacement. Sample: $sample_str"
+    end
+    return A
+end
+
 filter_window!(M::Matrix{Float64}) = begin
     M = M[M[:,1] .>= START, :]
     M = M[M[:,1] .<= STOP, :]
@@ -99,6 +133,8 @@ end
 # -------- read monthly FF5 (for RF) --------
 ff5_file = joinpath(rawdir, "F-F_Research_Data_5_Factors_2x3.csv")
 f_factors, f_header = read_monthly_table(ff5_file)
+# sentinel check BEFORE windowing/transform
+check_no_missing_sentinels!(f_factors; from_col=2, threshold=-90.0, replacement=NaN)
 f_factors = filter_window!(f_factors)
 percent_to_decimal!(f_factors)  # convert all factor columns (incl. RF) to decimals
 rf = rf_from_factors(f_factors, f_header)
@@ -135,8 +171,10 @@ for (infile, outslug) in portfolio_files
         @warn "Skipping missing file" infile=infile
         continue
     end
-    M, _ = read_monthly_table(path)     # DATE + raw % returns (with NaNs tolerated)
-    E = align_and_excess(M, rf)         # DATE + EXCESS (decimals), aligned to RF dates
+    M, _ = read_monthly_table(path)    # DATE + raw % returns
+    # sentinel check BEFORE windowing/transform
+    check_no_missing_sentinels!(M; from_col=2, threshold=-90.0, replacement=NaN)
+    E = align_and_excess(M, rf)        # DATE + EXCESS (decimals), aligned to RF dates
     open(joinpath(datadir, outslug * ".jls"), "w") do io
         serialize(io, E)
     end
