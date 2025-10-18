@@ -1,0 +1,97 @@
+# --- Julia / Pkg ---------------------------------------------------
+# Bytecode, coverage, artifacts, build outputs
+*.ji
+*.jl.cov
+*.jl.mem
+/deps/
+/build/
+/artifacts/
+/Manifest.toml        # keep out of VCS unless you want a locked environment
+
+# Precomp & logs
+/.julia/              # local registry/packages cache
+logs/
+
+# --- Project outputs -----------------------------------------------
+# Results, caches, scratch
+/results*/
+**/tmp/
+**/.cache/
+*.bak
+*.tmp
+
+# --- Data (replication) --------------------------------------------
+# Ignore raw/big data by default; keep README and small samples
+/data/**
+!/data/.gitkeep
+!/data/README.md
+# Uncomment to version a tiny sample:
+#!/data/sample_*.jls
+
+# --- Docs ----------------------------------------------------------
+/docs/build/
+/docs/site/
+/docs/Manifest.toml
+
+# --- Notebooks -----------------------------------------------------
+# Jupyter & Pluto
+.ipynb_checkpoints/
+/**/.ipynb_checkpoints/
+*.jl~            # Pluto temp
+*.pluto.jl#*
+
+# --- Editors / IDEs ------------------------------------------------
+# VS Code
+.vscode/
+/.history/
+/*.code-workspace
+
+# JetBrains
+.idea/
+
+# Sublime / TextMate
+*.sublime-*
+*.tmproj
+
+# --- OS / Misc -----------------------------------------------------
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Icon?
+._*
+Desktop.ini
+
+# --- Compiled / binaries -------------------------------------------
+*.dSYM/
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+
+# --- LaTeX (if you compile slides/papers here) ---------------------
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.run.xml
+*.synctex.gz
+*.toc
+
+# --- Images/plots (generated) --------------------------------------
+/figures/
+/plots/
+
+# --- CI / tooling --------------------------------------------------
+/coverage/
+/lcov.info
+
+# --- Node (if docs have JS toolchains) -----------------------------
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
