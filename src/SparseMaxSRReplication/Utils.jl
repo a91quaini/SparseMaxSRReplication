@@ -375,8 +375,10 @@ Select a `k`-asset subset **in-sample** from `R[idx_in, :]` using LASSO and MIQP
 methods. If `idx_out` is nonempty, compute weights in-sample and evaluate **out-of-
 sample** Sharpe on a separately stabilized covariance.
 
-Returns a named tuple with fields `sr_lasso_vanilla`, `sr_lasso_refit`,
-`sr_miqp_vanilla`, `sr_miqp_refit`, and `type ∈ (:in_sample, :out_of_sample)`.
+Returns a named tuple with fields:
+- `sr_lasso_vanilla`, `sr_lasso_refit`, `sr_miqp_vanilla`, `sr_miqp_refit`
+- `status_lasso_vanilla`, `status_lasso_refit`, `status_miqp_vanilla`, `status_miqp_refit`
+- `type ∈ (:in_sample, :out_of_sample)`
 """
 function n_choose_k_mve_sr(
     R::AbstractMatrix{<:Real},
@@ -494,12 +496,27 @@ function n_choose_k_mve_sr(
                                       selection = res_miqp_refit.selection,    do_checks = false)
     end
 
+    # -----------------------
+    # Collect statuses (pass-through as returned by the solvers)
+    # -----------------------
+    status_lasso_vanilla = res_lasso_vanilla.status
+    status_lasso_refit   = res_lasso_refit.status
+    status_miqp_vanilla  = res_miqp_vanilla.status
+    status_miqp_refit    = res_miqp_refit.status
+
     return (
+        # SRs
         sr_lasso_vanilla = sr_lasso_vanilla,
         sr_lasso_refit   = sr_lasso_refit,
         sr_miqp_vanilla  = sr_miqp_vanilla,
         sr_miqp_refit    = sr_miqp_refit,
-        type             = typ,
+        # Statuses
+        status_lasso_vanilla = status_lasso_vanilla,
+        status_lasso_refit   = status_lasso_refit,
+        status_miqp_vanilla  = status_miqp_vanilla,
+        status_miqp_refit    = status_miqp_refit,
+        # Type
+        type = typ,
     )
 end
 

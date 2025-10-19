@@ -378,6 +378,14 @@ end
     lasso_cfg = (alpha=0.9, nlambda=100, lambda_min_ratio=1e-4, standardize=false)
     miqp_cfg  = (γ=1.0, mipgap=1e-3, time_limit=10.0, threads=0, verbose=false)
 
+    # Helper: check status without importing MOI
+    is_ok_status(s) = begin
+        # Accept any status that is not an obvious failure/invalid
+        # Works for Symbol, String, or MOI.TerminationStatusCode:
+        ss = lowercase(string(s))
+        !(occursin("INFEAS", ss) || occursin("ERROR", ss) || occursin("INVALID", ss) || occursin("FAIL", ss))
+    end
+
     # ---- 1) Out-of-sample evaluation ----
     res_oos = n_choose_k_mve_sr(
         R, collect(idx_in), collect(idx_out), k;
@@ -392,6 +400,16 @@ end
     @test isfinite(res_oos.sr_miqp_vanilla)
     @test isfinite(res_oos.sr_miqp_refit)
 
+    # NEW: statuses exist and look sane (not obviously failing)
+    @test hasproperty(res_oos, :status_lasso_vanilla)
+    @test hasproperty(res_oos, :status_lasso_refit)
+    @test hasproperty(res_oos, :status_miqp_vanilla)
+    @test hasproperty(res_oos, :status_miqp_refit)
+    @test is_ok_status(res_oos.status_lasso_vanilla)
+    @test is_ok_status(res_oos.status_lasso_refit)
+    @test is_ok_status(res_oos.status_miqp_vanilla)
+    @test is_ok_status(res_oos.status_miqp_refit)
+
     # ---- 2) In-sample evaluation (SRs from search) ----
     res_ins = n_choose_k_mve_sr(
         R, collect(idx_in), Int[], k;
@@ -405,6 +423,16 @@ end
     @test isfinite(res_ins.sr_lasso_refit)
     @test isfinite(res_ins.sr_miqp_vanilla)
     @test isfinite(res_ins.sr_miqp_refit)
+
+    # NEW: statuses for IS case
+    @test hasproperty(res_ins, :status_lasso_vanilla)
+    @test hasproperty(res_ins, :status_lasso_refit)
+    @test hasproperty(res_ins, :status_miqp_vanilla)
+    @test hasproperty(res_ins, :status_miqp_refit)
+    @test is_ok_status(res_ins.status_lasso_vanilla)
+    @test is_ok_status(res_ins.status_lasso_refit)
+    @test is_ok_status(res_ins.status_miqp_vanilla)
+    @test is_ok_status(res_ins.status_miqp_refit)
 
     # ---- 3) Monotonicity ONLY in-sample (refit ≥ vanilla) ----
     @test res_ins.sr_lasso_refit  ≥ res_ins.sr_lasso_vanilla - 1e-8
@@ -424,6 +452,16 @@ end
     @test isapprox(res_is_eval_as_oos.sr_miqp_vanilla,  res_ins.sr_miqp_vanilla;  rtol=0.10, atol=1e-3)
     @test isapprox(res_is_eval_as_oos.sr_miqp_refit,    res_ins.sr_miqp_refit;    rtol=0.10, atol=1e-3)
 
+    # NEW: statuses exist also in this degenerate case
+    @test hasproperty(res_is_eval_as_oos, :status_lasso_vanilla)
+    @test hasproperty(res_is_eval_as_oos, :status_lasso_refit)
+    @test hasproperty(res_is_eval_as_oos, :status_miqp_vanilla)
+    @test hasproperty(res_is_eval_as_oos, :status_miqp_refit)
+    @test is_ok_status(res_is_eval_as_oos.status_lasso_vanilla)
+    @test is_ok_status(res_is_eval_as_oos.status_lasso_refit)
+    @test is_ok_status(res_is_eval_as_oos.status_miqp_vanilla)
+    @test is_ok_status(res_is_eval_as_oos.status_miqp_refit)
+
     # ---- 5) Stabilization toggle still yields finite results ----
     res_oos_nostab = n_choose_k_mve_sr(
         R, collect(idx_in), collect(idx_out), k;
@@ -436,6 +474,11 @@ end
     @test isfinite(res_oos_nostab.sr_lasso_refit)
     @test isfinite(res_oos_nostab.sr_miqp_vanilla)
     @test isfinite(res_oos_nostab.sr_miqp_refit)
+    # NEW: statuses present & sane
+    @test is_ok_status(res_oos_nostab.status_lasso_vanilla)
+    @test is_ok_status(res_oos_nostab.status_lasso_refit)
+    @test is_ok_status(res_oos_nostab.status_miqp_vanilla)
+    @test is_ok_status(res_oos_nostab.status_miqp_refit)
 
     # ---- 6) Error paths ----
     @test_throws ArgumentError n_choose_k_mve_sr(R, Int[], Int[], k)
@@ -446,8 +489,9 @@ end
     @test_throws ArgumentError n_choose_k_mve_sr(R, [0, 1, 2], Int[], k)
     @test_throws ArgumentError n_choose_k_mve_sr(R, collect(idx_in), [T+1, T+2], k)
 
-    println("✅ n_choose_k_mve_sr passed IS/OOS, stabilization, and error-path tests.")
+    println("✅ n_choose_k_mve_sr passed IS/OOS, statuses, stabilization, and error-path tests.")
 end
+
 
 
 

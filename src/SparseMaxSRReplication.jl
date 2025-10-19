@@ -16,12 +16,18 @@ Public API re-exports (see `?name` for docs):
 
 # Depend on the core algorithms provided by SparseMaxSR
 using SparseMaxSR
-using Random, LinearAlgebra
+using Random
+using LinearAlgebra
 using Serialization
+using Statistics
+using Printf
+using Base.Threads
 
 # Bring in the local utilities (a nested module defined in the included file)
 include("SparseMaxSRReplication/Utils.jl")
+include("SparseMaxSRReplication/UtilsEmpirics.jl")
 using .Utils
+using .UtilsEmpirics
 
 # ----------------------------
 # Re-exports (public surface)
@@ -34,7 +40,13 @@ export data_dir,
        simulate_mve_sr,
        calibrate_factor_model,
        calibrate_factor_model_from_data,
-       compute_simulation_results
+       compute_simulation_results,
+       EmpiricConfig, 
+       EmpiricResults,
+       run_managed_portfolios_daily,
+       print_sr_table, 
+       print_status_table,
+       save_results!
 
 # ----------------------------
 # Initialization & precompile
