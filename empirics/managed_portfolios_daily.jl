@@ -32,10 +32,31 @@
 using SparseMaxSRReplication
 using SparseMaxSRReplication.UtilsEmpirics
 using Printf, Dates
+using Plots
 
+# In-sample and out-of-sample window size
 # Choose your W_IN / W_OUT first (pick from the sets above)
-const W_IN_CHOSEN  = 504
-const W_OUT_CHOSEN = 63
+const W_IN_CHOSEN  = 252
+const W_OUT_CHOSEN = 126
+
+# Number of assets
+N_ASSETS_CHOSEN = 250
+
+# Portfolio cardinality
+# Minimum k - keep it above 1 and below N_ASSETS_CHOSEN-1
+K_MIN_CHOSEN = 1 
+K_MIN_CHOSEN = max(min(K_MIN_CHOSEN, N_ASSETS_CHOSEN-1), 1)
+# Step between consecutive k's
+K_STEP_CHOSEN = 5
+# Maximum k - keep it below N_ASSETS_CHOSEN-1 and below W_OUT_CHOSEN
+K_CAP_CHOSEN = 150
+K_CAP_CHOSEN = min(K_CAP_CHOSEN, N_ASSETS_CHOSEN-1, W_OUT_CHOSEN)
+
+# RNG seed
+RNG_SEED_CHOSEN = 12345
+
+# Threads for MIQP -> leave to 1 since we parallelize over estimating windows
+MIQP_THREADS_CHOSEN = 1 # max(Threads.nthreads()-1,1)
 
 # Recommended param lookups keyed by W_IN (you can override below if desired)
 const RECOMMENDED_LASSO = Dict(
@@ -44,9 +65,9 @@ const RECOMMENDED_LASSO = Dict(
     504 => (; alpha=0.90, nlambda=200, lambda_min_ratio=1e-4, epsilon=1e-8),
 )
 const RECOMMENDED_MIQP = Dict(
-    126 => (; exactly_k=true, mipgap=0.01,  time_limit=120, threads=max(Threads.nthreads()-1,1)),
-    252 => (; exactly_k=true, mipgap=0.005, time_limit=120, threads=max(Threads.nthreads()-1,1)),
-    504 => (; exactly_k=true, mipgap=0.002, time_limit=120, threads=max(Threads.nthreads()-1,1)),
+    126 => (; exactly_k=true, mipgap=0.1e-2,  time_limit=60, threads=MIQP_THREADS_CHOSEN),
+    252 => (; exactly_k=true, mipgap=0.5e-3, time_limit=60, threads=MIQP_THREADS_CHOSEN),
+    504 => (; exactly_k=true, mipgap=0.2e-3, time_limit=60, threads=MIQP_THREADS_CHOSEN),
 )
 
 # Configure (adjust as desired)
@@ -56,8 +77,8 @@ cfg = EmpiricConfig(
     W_OUT = W_OUT_CHOSEN,
 
     # Subset of assets to use (reproducible with RNG_SEED)
-    N_ASSETS = 25,
-    RNG_SEED = 12345,
+    N_ASSETS = N_ASSETS_CHOSEN,
+    RNG_SEED = RNG_SEED_CHOSEN,
 
     # Method params (use recommended per W_IN; override here if needed)
     LASSO_PARAMS = get(RECOMMENDED_LASSO, W_IN_CHOSEN, RECOMMENDED_LASSO[504]),
@@ -69,7 +90,7 @@ cfg = EmpiricConfig(
     stabilize_Σ = true,
 
     # k-grid
-    k_min = 5, k_step = 1, k_cap = 24, # Recommended: 5, k_step = 5, k_cap = 100,
+    k_min = K_MIN_CHOSEN, k_step = K_STEP_CHOSEN, k_cap = K_CAP_CHOSEN, # Recommended: 5, k_step = 5, k_cap = 100,
 
     # Data source
     handling_missing = :Median,
@@ -96,3 +117,20 @@ print_status_table(res)
 
 # Save
 save_results!(res; cfg)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Plot: Average OOS Sharpe by k (one line per method)
+# ──────────────────────────────────────────────────────────────────────────────
+fig_dir = joinpath(dirname(@__FILE__), "..", "empirics", "figures", "managed_portfolios_daily")
+
+# Let it auto-detect methods present in `res` and save files:
+p = plot_oos_sr_by_k(res; save_dir=fig_dir)
+
+# Or explicitly choose fields & labels (order controls legend order):
+p = plot_oos_sr_by_k(
+    res;
+    method_fields = [:avg_lasso, :avg_lasso_refit, :avg_miqp, :avg_miqp_refit],
+    method_labels = ["LASSO", "LASSO-REFIT", "MIQP", "MIQP-REFIT"],
+    save_dir = fig_dir,
+)

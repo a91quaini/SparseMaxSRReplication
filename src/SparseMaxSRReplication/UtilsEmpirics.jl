@@ -4,11 +4,13 @@ using ..Utils                      # our public helpers & constants
 using LinearAlgebra, Statistics
 using Random, Serialization, Printf
 using Base.Threads
+using Plots
 
 export EmpiricConfig, EmpiricResults,
        run_managed_portfolios_daily,
        print_sr_table, print_status_table,
-       save_results!
+       save_results!,
+       plot_oos_sr_by_k
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Types
@@ -131,34 +133,43 @@ function run_managed_portfolios_daily(cfg::EmpiricConfig = EmpiricConfig())
     K = length(k_grid)
 
     # 3) Accumulators
-    S_acc   = Dict{Symbol, Vector{Float64}}(m => zeros(K) for m in METHODS)
-    counts  = zeros(Int, K)
-    opt_ct  = Dict{Symbol, Vector{Int}}(m => zeros(Int, K) for m in METHODS)
-    sub_ct  = Dict{Symbol, Vector{Int}}(m => zeros(Int, K) for m in METHODS)
+    METHODS = (:lasso, :lasso_refit, :miqp, :miqp_refit)
+    MERGE_LOCK = ReentrantLock()
 
-    threadlocal_buffers() = (
+    S_acc  = Dict{Symbol, Vector{Float64}}(m => zeros(K) for m in METHODS)
+    counts = zeros(Int, K)
+    opt_ct = Dict{Symbol, Vector{Int}}(m => zeros(Int, K) for m in METHODS)
+    sub_ct = Dict{Symbol, Vector{Int}}(m => zeros(Int, K) for m in METHODS)
+
+    threadlocal_buffers = () -> (
         Dict{Symbol, Vector{Float64}}(m => zeros(K) for m in METHODS),  # S_local
         zeros(Int, K),                                                  # C_local
         Dict{Symbol, Vector{Int}}(m => zeros(Int, K) for m in METHODS), # OPT_local
         Dict{Symbol, Vector{Int}}(m => zeros(Int, K) for m in METHODS), # SUB_local
     )
 
-    # 4) Main computation (timed), parallel over windows; no println inside
+    # 4) Main computation (timed), bounded concurrency over windows
     elapsed = @elapsed begin
-        @threads for w in 1:W
+        NWORKERS = max(nthreads() - 1, 1)
+        sem = Base.Semaphore(NWORKERS)
+
+        function _process_window!(w::Int)
+            # avoid oversubscription from BLAS
+            BLAS.set_num_threads(1)
+
             S_local, C_local, OPT_local, SUB_local = threadlocal_buffers()
             idx_in, idx_out = idx_pairs[w]
 
             for (ik, k) in enumerate(k_grid)
                 res = Utils.n_choose_k_mve_sr(R, idx_in, idx_out, k;
-                    lasso_params = cfg.LASSO_PARAMS,
-                    miqp_params  = cfg.MIQP_PARAMS,
+                    lasso_params    = cfg.LASSO_PARAMS,
+                    miqp_params     = cfg.MIQP_PARAMS,
                     use_refit_lasso = true,
                     use_refit_miqp  = true,
-                    epsilon_in = cfg.epsilon_in,
-                    epsilon_out = cfg.epsilon_out,
-                    stabilize_Σ = cfg.stabilize_Σ,
-                    do_checks = false,
+                    epsilon_in      = cfg.epsilon_in,
+                    epsilon_out     = cfg.epsilon_out,
+                    stabilize_Σ     = cfg.stabilize_Σ,
+                    do_checks       = false,
                 )
 
                 @inbounds begin
@@ -197,11 +208,25 @@ function run_managed_portfolios_daily(cfg::EmpiricConfig = EmpiricConfig())
                 end
                 @inbounds counts .+= C_local
             end
+            return nothing
         end
+
+        tasks = Vector{Task}(undef, W)
+        for w in 1:W
+            tasks[w] = Threads.@spawn begin
+                Base.acquire(sem)
+                try
+                    _process_window!(w)
+                finally
+                    Base.release(sem)
+                end
+            end
+        end
+        foreach(wait, tasks)
     end
 
     # 5) Averages
-    avg = Dict{Symbol,Vector{Float64}}(m => similar(S_acc[m]) for m in (:lasso,:lasso_refit,:miqp,:miqp_refit))
+    avg = Dict{Symbol,Vector{Float64}}(m => similar(S_acc[m]) for m in METHODS)
     for m in keys(avg), i in eachindex(k_grid)
         avg[m][i] = counts[i] == 0 ? NaN : S_acc[m][i] / counts[i]
     end
@@ -285,5 +310,345 @@ function save_results!(res::EmpiricResults; cfg::EmpiricConfig, filename::Abstra
     println("\nSaved results to $(outfile)")
     return outfile
 end
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Plot
+# ──────────────────────────────────────────────────────────────────────────────
+
+"""
+    plot_oos_sr_by_k(res;
+        method_fields::Vector{Symbol}=Symbol[],
+        method_labels::Vector{String}=String[],
+        save_dir::Union{Nothing,AbstractString}=nothing,
+        filename_base::Union{Nothing,String}=nothing),
+        subfolder::String="managed_portfolios_daily"
+        )
+
+Plot Average OOS Sharpe by `k` with one line per method found in `res`.
+
+Arguments
+---------
+- `res`: a results struct/NamedTuple with at least `k_grid` and one or more
+  series named like `avg_lasso`, `avg_lasso_refit`, `avg_miqp`, `avg_miqp_refit`.
+- `method_fields` (optional): fields to plot, e.g.
+  `[:avg_lasso, :avg_lasso_refit, :avg_miqp]`. If empty, the function will
+  auto-detect among known method fields present in `res`.
+- `method_labels` (optional): labels for the legend, same length & order as
+  `method_fields`. If empty, defaults are used for known fields; otherwise the
+  field name as a string.
+- `save_dir` (optional): directory to save the figure(s). If `nothing`, nothing is saved.
+- `filename_base` (optional): base filename without extension. If `nothing`, it tries
+  `oos_sr_by_k_Win_<W_in>_Wout_<W_out>_N_<N>` if present in `res`, otherwise `oos_sr_by_k`.
+- `subfolder` (optional): subfolder of `/empirics/figures` where figures are stored.
+
+Returns
+-------
+The `Plots.Plot` object.
+"""
+function plot_oos_sr_by_k(res;
+    method_fields::Vector{Symbol}=Symbol[],
+    method_labels::Vector{String}=String[],
+    save_dir::Union{Nothing,AbstractString}=nothing,
+    filename_base::Union{Nothing,String}=nothing,
+    subfolder::String="managed_portfolios_daily",
+)
+    # x-axis
+    ks = hasproperty(res, :k_grid) ? getfield(res, :k_grid) :
+         hasproperty(res, :k)      ? getfield(res, :k)      :
+         error("`res` must have `k_grid` (or `k`).")
+
+    # Known fields → default labels
+    known = Dict(
+        :avg_lasso         => "LASSO",
+        :avg_lasso_refit   => "LASSO-REFIT",
+        :avg_miqp          => "MIQP",
+        :avg_miqp_refit    => "MIQP-REFIT",
+    )
+
+    # Auto-detect present methods if none explicitly provided
+    candidates = isempty(method_fields) ? [s for s in keys(known) if hasproperty(res, s)] : method_fields
+    @assert !isempty(candidates) "No method fields to plot. Provide `method_fields` or populate `res` with avg_* fields."
+
+    # Build labels
+    labels = if !isempty(method_labels)
+        @assert length(method_labels) == length(candidates) "method_labels must match method_fields length."
+        method_labels
+    else
+        [get(known, s, String(s)) for s in candidates]
+    end
+
+    # Style & plot
+    default(size=(900, 550), legend=:topleft, lw=2, grid=true)
+    p = plot()
+    markers = [:circle, :utriangle, :square, :diamond, :star5, :xcross, :hexagon, :pentagon, :cross]
+
+    for (i, f) in enumerate(candidates)
+        @assert hasproperty(res, f) "`res` has no field $(f)."
+        y = getfield(res, f)
+        @assert length(y) == length(ks) "Length mismatch for $(f): got $(length(y)) vs k_grid $(length(ks))."
+        plot!(p, ks, y; label=labels[i], marker=markers[mod1(i, length(markers))])
+    end
+
+    plot!(p; xlabel="k", ylabel="Average OOS Sharpe", title="Average OOS Sharpe by k (non-overlapping windows)")
+
+    # -------- save path (defaults to the package repo) --------
+    if save_dir === nothing
+        # package root (robust from inside submodules)
+        pkgroot = Base.pkgdir(parentmodule(@__MODULE__))
+        save_root = joinpath(pkgroot, "empirics", "figures")
+    else
+        save_root = save_dir
+    end
+    full_dir = joinpath(save_root, subfolder)
+
+    if !isempty(full_dir)
+        mkpath(full_dir)
+        base = if filename_base !== nothing
+            filename_base
+        elseif hasproperty(res, :W_in) && hasproperty(res, :W_out) && hasproperty(res, :N)
+            "oos_sr_by_k_Win_$(getfield(res,:W_in))_Wout_$(getfield(res,:W_out))_N_$(getfield(res,:N))"
+        else
+            "oos_sr_by_k"
+        end
+        for ext in (:png, :pdf)
+            savefig(p, joinpath(full_dir, base * "." * String(ext)))
+        end
+    end
+
+    return p
+end
+
+"""
+    pick_lasso_alpha(Rin; k, alphas, method=:cv, kfolds=10, kappa=0.01,
+                     epsilon=EPS_RIDGE, stabilize_Σ=true,
+                     use_refit=false, do_checks=false, lasso_params=(;))
+
+Select the best **LASSO regularization parameter** `alpha` for a given in-sample
+estimation window `Rin` (T×N matrix of excess returns) and desired sparsity
+level `k`.
+
+The function automatically decides whether to perform **cross-validation (CV)**
+or a **generalized cross-validation (GCV)**-type selection based on sample size
+and user input.
+
+### Arguments
+- `Rin::AbstractMatrix{<:Real}` : In-sample excess returns (T×N).
+- `k::Integer` : Target number of selected assets (`k`-support).
+- `alphas::AbstractVector{<:Real}` : Grid of candidate α values in (0,1].
+- `method::Symbol = :cv` :
+  - `:cv` → K-fold time-series CV (default 10-fold).
+  - `:gcv` → Penalized in-sample criterion.
+  - `:auto` → Use CV when `T ≥ max(k, kfolds)`, otherwise fall back to GCV.
+- `kfolds::Int = 10` : Number of folds for CV.
+- `kappa::Real = 0.01` : Complexity penalty weight in GCV criterion.
+- `epsilon::Real = EPS_RIDGE` : Ridge stabilization added to sample covariance.
+- `stabilize_Σ::Bool = true` : If true, applies Σ stabilization via `_prep_S`.
+- `use_refit::Bool = false` : If true, runs LASSO-refit version of the search.
+- `do_checks::Bool = false` : Perform input validity checks.
+- `lasso_params::NamedTuple = (;)` : Additional keyword arguments forwarded to
+  `mve_lasso_relaxation_search`.
+
+### Method
+1. **Trivial case:**  
+   If `length(alphas) == 1`, the function runs one LASSO fit and returns that α.
+2. **Cross-Validation (`method=:cv`):**  
+   Performs *blocked* K-fold CV to respect time ordering.  
+   For each α:
+   - Fit on the training subset (`μ_tr`, `Σ_tr`).
+   - Compute validation Sharpe ratio on held-out subset (`μ_val`, `Σ_val`).
+   - Average SRs across folds.
+   The α giving the **highest average validation Sharpe** is selected.
+3. **Generalized Cross-Validation (`method=:gcv`):**  
+   Computes a penalized in-sample criterion for each α:
+   [
+   GCV(α) = log(max(SR_{in}(α), 10^{-12})- κ * nnz(α),
+   ]
+   where `nnz(α)` is the number of selected assets.  
+   The α maximizing this criterion is selected.
+4. If no α yields an exact `k`-support, the function picks the **closest support**
+   (minimizing `|nnz − k|`) and then the **highest Sharpe ratio** among ties.
+
+### Returns
+A named tuple:
+(
+    alpha        :: Float64,   # best α
+    method_used  :: Symbol,    # :single, :cv, or :gcv
+    score        :: Float64,   # CV SR or GCV criterion value
+    result       :: NamedTuple # full output from mve_lasso_relaxation_search
+)
+"""
+function pick_lasso_alpha(
+    Rin::AbstractMatrix{<:Real};
+    k::Integer,
+    alphas::AbstractVector{<:Real},
+    method::Symbol = :cv,          # :cv, :gcv, or :auto
+    kfolds::Int    = 10,
+    kappa::Real    = 0.01,         # penalty weight for nnz in GCV
+    epsilon::Real  = EPS_RIDGE,
+    stabilize_Σ::Bool = true,
+    use_refit::Bool   = false,
+    do_checks::Bool   = false,
+    lasso_params::NamedTuple = (;),   # extra knobs passed to LASSO
+)
+    # trivial case
+    if length(alphas) == 1
+        α = first(alphas)
+        μ  = vec(mean(Rin; dims=1))
+        Σ  = cov(Rin; dims=1)
+        Σp = _prep_S(Σ, epsilon, stabilize_Σ)
+        res = mve_lasso_relaxation_search(
+            μ, Σp, size(Rin,1);
+            k = k, compute_weights = true, use_refit = use_refit,
+            do_checks = do_checks, alpha = α, lasso_params...
+        )
+        return (alpha = α, method_used = :single, score = float(get(res, :sr, NaN)), result = res)
+    end
+
+    T = size(Rin, 1)
+
+    # Decide method
+    method_used = if method === :auto
+        (T >= k && T >= max(5, kfolds)) ? :cv : :gcv
+    elseif method === :cv
+        (T >= k && T >= max(5, kfolds)) ? :cv : :gcv
+    else
+        :gcv
+    end
+
+    if method_used === :cv
+        # ----- Blocked K-fold CV (contiguous folds to avoid leakage) -----
+        kf = min(kfolds, T)                 # guard
+        fold_bounds = cumsum(vcat(0, fill(div(T, kf), kf))) .+ (0:kf-1) .* (T % kf .> (0:kf-1))
+        # fold i uses validation indices (fold_bounds[i]+1):fold_bounds[i+1]
+        function fold_range(i)
+            s = fold_bounds[i] + 1
+            e = (i < length(fold_bounds)) ? fold_bounds[i+1] : T
+            s:e
+        end
+
+        # precompute nothing; we recompute μ/Σ per train fold (cheap vs. correctness)
+        bestα, bestScore, bestRes = nothing, -Inf, nothing
+
+        for α in alphas
+            cv_scores = Float64[]
+            any_valid = false
+            for i in 1:kf
+                idx_val = fold_range(i)
+                idx_tr  = setdiff(1:T, idx_val)  # contiguous CV; if T is large, could use views instead
+
+                # moments train / val
+                μtr  = vec(mean(@view Rin[idx_tr, :]; dims=1))
+                Σtr  = cov(@view Rin[idx_tr, :]; dims=1)
+                μval = vec(mean(@view Rin[idx_val,:]; dims=1))
+                Σval = cov(@view Rin[idx_val,:]; dims=1)
+
+                Σtr_p  = _prep_S(Σtr,  epsilon, stabilize_Σ)
+                Σval_p = _prep_S(Σval, epsilon, stabilize_Σ)
+
+                # fit on train
+                res = mve_lasso_relaxation_search(
+                    μtr, Σtr_p, length(idx_tr);
+                    k = k, compute_weights = true, use_refit = use_refit,
+                    do_checks = false, alpha = α, lasso_params...
+                )
+
+                # require exact k-support (as requested)
+                if length(res.selection) == k && isfinite(get(res, :sr, NaN))
+                    sr_val = compute_sr(res.weights, μval, Σval_p; selection = res.selection, do_checks = false)
+                    if isfinite(sr_val)
+                        push!(cv_scores, sr_val)
+                        any_valid = true
+                    end
+                end
+            end
+
+            # aggregate (mean SR across valid folds)
+            if any_valid
+                sc = mean(cv_scores)
+                if sc > bestScore
+                    bestScore = sc
+                    bestα     = α
+                    # also compute a "final" result on all Rin for the chosen α candidate
+                    μ  = vec(mean(Rin; dims=1))
+                    Σ  = cov(Rin; dims=1)
+                    Σp = _prep_S(Σ, epsilon, stabilize_Σ)
+                    bestRes = mve_lasso_relaxation_search(
+                        μ, Σp, T;
+                        k = k, compute_weights = true, use_refit = use_refit,
+                        do_checks = do_checks, alpha = α, lasso_params...
+                    )
+                end
+            end
+        end
+
+        # fallback: if no α produced exact k-support anywhere, pick closest-support by IS SR
+        if bestRes === nothing
+            bestGap = typemax(Int)
+            bestTie = -Inf
+            for α in alphas
+                μ  = vec(mean(Rin; dims=1))
+                Σ  = cov(Rin; dims=1)
+                Σp = _prep_S(Σ, epsilon, stabilize_Σ)
+                res = mve_lasso_relaxation_search(
+                    μ, Σp, T; k = k, compute_weights = true, use_refit = use_refit,
+                    do_checks = do_checks, alpha = α, lasso_params...
+                )
+                gap = abs(length(res.selection) - k)
+                sr  = float(get(res, :sr, NaN))
+                if gap < bestGap || (gap == bestGap && sr > bestTie)
+                    bestGap, bestTie = gap, sr
+                    bestα, bestRes   = α, res
+                    bestScore        = sr
+                end
+            end
+        end
+
+        return (alpha = bestα, method_used = :cv, score = bestScore, result = bestRes)
+    else
+        # ----- GCV-like (penalized IS) -----
+        μ  = vec(mean(Rin; dims=1))
+        Σ  = cov(Rin; dims=1)
+        Σp = _prep_S(Σ, epsilon, stabilize_Σ)
+
+        bestα, bestVal, bestRes = nothing, -Inf, nothing
+        for α in alphas
+            res = mve_lasso_relaxation_search(
+                μ, Σp, T;
+                k = k, compute_weights = true, use_refit = use_refit,
+                do_checks = do_checks, alpha = α, lasso_params...
+            )
+            # exact k-support preferred; if none, fallback later
+            sr_in = float(get(res, :sr, NaN))
+            nnz   = length(res.selection)
+            crit  = log(max(sr_in, 1e-12)) - kappa * nnz
+            if (nnz == k && crit > bestVal) || (bestα === nothing && crit > bestVal)
+                bestVal, bestα, bestRes = crit, α, res
+            end
+        end
+
+        # fallback to closest-support if nothing with nnz==k won
+        if length(bestRes.selection) != k
+            bestGap = typemax(Int); bestTie = -Inf
+            for α in alphas
+                res = mve_lasso_relaxation_search(
+                    μ, Σp, T;
+                    k = k, compute_weights = true, use_refit = use_refit,
+                    do_checks = do_checks, alpha = α, lasso_params...
+                )
+                gap = abs(length(res.selection) - k)
+                sr  = float(get(res, :sr, NaN))
+                if gap < bestGap || (gap == bestGap && sr > bestTie)
+                    bestGap, bestTie = gap, sr
+                    bestα, bestRes   = α, res
+                    bestVal          = log(max(sr, 1e-12)) - kappa * length(res.selection)
+                end
+            end
+        end
+
+        return (alpha = bestα, method_used = :gcv, score = bestVal, result = bestRes)
+    end
+end
+
+
 
 end # module

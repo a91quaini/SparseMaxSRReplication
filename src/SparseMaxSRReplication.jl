@@ -22,6 +22,7 @@ using Serialization
 using Statistics
 using Printf
 using Base.Threads
+using Plots
 
 # Bring in the local utilities (a nested module defined in the included file)
 include("SparseMaxSRReplication/Utils.jl")
@@ -46,7 +47,8 @@ export data_dir,
        run_managed_portfolios_daily,
        print_sr_table, 
        print_status_table,
-       save_results!
+       save_results!,
+       plot_oos_sr_by_k
 
 # ----------------------------
 # Initialization & precompile

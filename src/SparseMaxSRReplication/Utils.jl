@@ -555,8 +555,8 @@ function compute_mve_sr_decomposition(
     end
 
     # 1) pick subset of size k from sample moments using the public search API
-    res = mve_exhaustive_search(Vector{Float64}(μ̂), Matrix{Float64}(Σ̂), k;
-        exactly_k=true, compute_weights=true, do_checks=false)
+    res = mve_exhaustive_search(μ̂, Σ̂, k,
+        compute_weights=true, do_checks=false)
 
     A = res.selection
     w = Vector{Float64}(res.weights)   # full-length; zeros outside A
